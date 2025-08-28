@@ -16,230 +16,150 @@ app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 
 // System prompt for Groq API
-const SYSTEM_PROMPT = `FIRST: Check if contract has mapping(uint256 => address) OR mapping(uint => address) for owners.
-IF YES: This is an NFT contract. Use (define-non-fungible-token my-nft uint) NOT define-fungible-token.
+const SYSTEM_PROMPT = `Convert Solidity to Clarity with PERFECT accuracy using these training examples.
 
-Convert Solidity to Clarity. Generate PERFECT code with ZERO errors.
-
-CRITICAL NFT DETECTION - FIRST PRIORITY:
-Step 1: Check if contract has mapping(uint256 => address) OR mapping(uint => address) for owners
-Step 2: If YES, this is an NFT contract - use (define-non-fungible-token my-nft uint)
-Step 3: NEVER use (define-fungible-token) for contracts with owners mapping
-Step 4: Use simple map operations for mint/transfer, NOT built-in nft functions
-
-CRITICAL NAMING RULES:
-1. State variables: add "stored-" prefix (uint x → stored-x)
-2. Function parameters: add "param-" prefix (uint x → param-x)  
-3. Function names: "get" → "get-value", "set" → "set-data"
-4. NEVER reuse any name in the same contract
-
-CONVERSION RULES:
+CORE CONVERSION RULES:
 - uint256/uint → uint (u0, u1, u100)
-- address → principal
-- bool → bool
-- string → (string-ascii 50)
-- msg.sender → contract-caller (NEVER tx-sender)
-- require(condition) → (asserts! condition (err u100))
-- require(condition, "message") → (asserts! condition (err u100))
-- mapping(K => V) → (define-map name K V)
+- address → principal  
+- mapping → define-map
+- require → if with (err ...) or (ok ...)
+- event → print
+- ERC721 → SIP-009 NFT standard
+- msg.sender → tx-sender
 
-CRITICAL: ALWAYS use contract-caller, NEVER tx-sender for msg.sender conversions
+CRITICAL MAPPING SYNTAX:
+For composite keys/values, use tuple syntax:
+- mapping(address => uint256) → (define-map balances {account: principal} {amount: uint})
+- Access: (map-get? balances {account: addr})
+- Set: (map-set balances {account: tx-sender} {amount: amount})
+- Get value: (get amount (map-get? balances {account: addr}))
 
-VARIABLE TYPES:
-- Simple variables: (define-data-var stored-name type initial-value)
-- string private text → (define-data-var stored-text (string-ascii 50) "")
-- uint256 private value → (define-data-var stored-value uint u0)
-- Only use define-map for actual mappings, NOT simple variables
+TRAINING EXAMPLES:
 
-VARIABLE ACCESS - CRITICAL:
-- Write to variable: (var-set stored-name new-value)
-- Read from variable: (var-get stored-name) - NEVER just the variable name
-- Return variable: (ok (var-get stored-name)) - ALWAYS use var-get
+EXAMPLE 1 - Simple Storage:
+Solidity:
+pragma solidity ^0.8.0;
+contract StorageExample {
+    uint256 public number;
+    function store(uint256 _num) public {
+        number = _num;
+    }
+    function retrieve() public view returns (uint256) {
+        return number;
+    }
+}
 
-LOCAL VARIABLES - CRITICAL:
-- Use (let ((var-name value)) ...) for local variables
-- NEVER use (define var-name value) inside functions
-- Example: (let ((current-id (var-get stored-counter))) ...)
+Clarity:
+(define-data-var number uint u0)
+(define-public (store (num uint))
+  (ok (var-set number num)))
+(define-read-only (retrieve)
+  (ok (var-get number)))
 
-COUNTER PATTERN - SIMPLIFIED SYNTAX:
-uint counter; counter++; → 
-(begin
-  (var-set stored-counter (+ (var-get stored-counter) u1))
-  ...use (- (var-get stored-counter) u1) for current id...)
+EXAMPLE 2 - Mapping with tx-sender:
+Solidity:
+pragma solidity ^0.8.0;
+contract MappingExample {
+    mapping(address => uint256) public balances;
+    function setBalance(uint256 _amount) public {
+        balances[msg.sender] = _amount;
+    }
+    function getBalance(address _addr) public view returns (uint256) {
+        return balances[_addr];
+    }
+}
 
-FORBIDDEN PATTERNS:
-- NEVER: (define (var-name) ...)
-- NEVER: (define var-name ...)
-- ALWAYS: (let ((var-name value)) ...)
+Clarity:
+(define-map balances {account: principal} {amount: uint})
+(define-public (set-balance (amount uint))
+  (ok (map-set balances {account: tx-sender} {amount: amount})))
+(define-read-only (get-balance (addr principal))
+  (default-to u0 (get amount (map-get? balances {account: addr}))))
 
-MAPPING CONVERSION - CRITICAL:
-- mapping(uint => string) → (define-map stored-data uint (string-ascii 50))
-- Access: data[key] → (map-get? stored-data key)  
-- Write: data[key] = value → (map-set stored-data key value)
-- NEVER use define-data-var for mappings
-- NEVER use empty-map function
-- Maps are automatically empty when defined
+EXAMPLE 3 - Require with if/err:
+Solidity:
+pragma solidity ^0.8.0;
+contract RequireExample {
+    uint256 public count = 0;
+    function increment() public {
+        require(count < 10, "Count limit reached");
+        count++;
+    }
+}
 
-EXAMPLE CORRECT MAP:
-(define-map stored-data uint (string-ascii 50))
+Clarity:
+(define-data-var count uint u0)
+(define-public (increment)
+  (if (< (var-get count) u10)
+    (begin
+      (var-set count (+ (var-get count) u1))
+      (ok true))
+    (err "Count limit reached")))
 
-(define-public (set-data (param-key uint) (param-value (string-ascii 50)))
+EXAMPLE 4 - Events with print:
+Solidity:
+pragma solidity ^0.8.0;
+contract EventExample {
+    event Stored(uint256 value);
+    uint256 public value;
+    function store(uint256 _val) public {
+        value = _val;
+        emit Stored(_val);
+    }
+}
+
+Clarity:
+(define-data-var value uint u0)
+(define-public (store (val uint))
   (begin
-    (map-set stored-data param-key param-value)
+    (var-set value val)
+    (print {event: "Stored", value: val})
     (ok true)))
 
-(define-read-only (get-value (param-key uint))
-  (default-to "" (map-get? stored-data param-key)))
+EXAMPLE 5 - ERC721/NFT:
+Solidity:
+pragma solidity ^0.8.0;
+import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
+contract MyNFT is ERC721 {
+    uint256 public tokenCounter;
+    constructor() ERC721("MyNFT", "NFT") {
+        tokenCounter = 0;
+    }
+    function mintNFT(address to) public returns (uint256) {
+        uint256 newTokenId = tokenCounter;
+        _safeMint(to, newTokenId);
+        tokenCounter++;
+        return newTokenId;
+    }
+}
 
-CRITICAL MAP SYNTAX:
-- Simple map: (define-map balances principal uint)
-- Composite key: (define-map allowances {owner: principal, spender: principal} uint)
-- NEVER use parentheses around single types
-- NEVER use invalid syntax like (define-map name (type1) (type2))
-
-CONTRACT TYPES:
-- Simple storage contracts: NO token definitions needed
-- ERC20 contracts with balances mapping: (define-fungible-token name)
-- NFT contracts with owners mapping: (define-non-fungible-token name uint)
-- If contract has mapping(uint => address) owners: ALWAYS USE (define-non-fungible-token name uint)
-- If contract has mapping(uint256 => address) owners: ALWAYS USE (define-non-fungible-token name uint)
-- NEVER use define-fungible-token for NFT contracts with owners mapping
-- Basic storage contracts should ONLY have maps and functions
-
-NFT CONTRACT DETECTION:
-- If you see mapping(uint => address) OR mapping(uint256 => address) for owners/ownership
-- ALWAYS use (define-non-fungible-token my-nft uint)
-- NEVER use (define-fungible-token) for NFT contracts
-
-SYNTAX - EXACT ARGUMENT COUNTS:
-- Variables: (define-data-var name type value) - EXACTLY 3 args
-- Maps: (define-map name key-type value-type) - EXACTLY 3 args  
-- map-set: (map-set map-name key value) - EXACTLY 3 args
-
-MAP HANDLING:
-- For mappings, use (define-map name key-type value-type)
-- NEVER use define-data-var for mappings
-- NEVER use empty-map - maps are empty by default
-- Use map-get? to read, map-set to write
-- Use default-to for missing values
-- map-get?: (map-get? map-name key) - EXACTLY 2 args
-- var-set: (var-set var-name value) - EXACTLY 2 args
-- var-get: (var-get var-name) - EXACTLY 1 arg
-- asserts!: (asserts! condition error) - EXACTLY 2 args
-- Public: (define-public (name (param type)) (begin ... (ok true)))
-- Read-only: (define-read-only (name) (ok value))
-- Map access: (default-to u0 (map-get? map-name key))
-
-EXAMPLES:
-
-Simple Storage:
-Input: uint x; function set(uint _x) { x = _x; } function get() returns (uint) { return x; }
-Output:
-(define-data-var stored-x uint u0)
-(define-public (set-data (param-x uint))
-  (begin
-    (var-set stored-x param-x)
-    (ok true)))
-(define-read-only (get-value)
-  (ok (var-get stored-x)))
-
-ERC20:
-Input: contract Token { mapping(address => uint) balances; function mint(address to, uint amount) { balances[to] += amount; } }
-Output:
-(define-fungible-token my-token)
-(define-map stored-balances principal uint)
-(define-public (mint (param-to principal) (param-amount uint))
-  (begin
-    (try! (ft-mint? my-token param-amount param-to))
-    (map-set stored-balances param-to (+ (default-to u0 (map-get? stored-balances param-to)) param-amount))
-    (ok true)))
-
-TRANSFER FUNCTION EXAMPLE:
-Input: function transfer(address to, uint amount) { balances[msg.sender] -= amount; balances[to] += amount; }
-Output:
-(define-public (transfer (param-to principal) (param-amount uint))
-  (begin
-    (asserts! (>= (default-to u0 (map-get? stored-balances contract-caller)) param-amount) (err u100))
-    (map-set stored-balances contract-caller (- (default-to u0 (map-get? stored-balances contract-caller)) param-amount))
-    (map-set stored-balances param-to (+ (default-to u0 (map-get? stored-balances param-to)) param-amount))
-    (ok true)))
-
-NFT CONTRACT - EXACT PATTERN:
-Input: mapping(uint256 => address) private owners;
-Output: 
+Clarity:
 (define-non-fungible-token my-nft uint)
-(define-map stored-owners uint principal)
+(define-data-var token-counter uint u0)
+(define-public (mint (recipient principal))
+  (let ((token-id (var-get token-counter)))
+    (begin
+      (var-set token-counter (+ token-id u1))
+      (ok (nft-mint? my-nft token-id recipient)))))
 
-COMPLETE NFT EXAMPLE:
-Input: contract NFT { mapping(uint256 => address) owners; uint counter; function mint(address to) { owners[counter] = to; counter++; } }
-Output:
-(define-non-fungible-token my-nft uint)
-(define-map stored-owners uint principal)
-(define-data-var stored-counter uint u0)
-(define-public (mint (param-to principal))
-  (begin
-    (map-set stored-owners (var-get stored-counter) param-to)
-    (var-set stored-counter (+ (var-get stored-counter) u1))
-    (ok true)))
+CRITICAL PATTERNS:
+1. Always use tuple syntax for maps: {key: type} {value: type}
+2. Use tx-sender for msg.sender (NOT contract-caller)
+3. Use (get field-name (map-get? ...)) to extract values from tuples
+4. Use if/err pattern for require statements
+5. Use print for events
+6. Use let bindings for local variables
+7. Use nft-mint? for NFT minting
 
-CRITICAL - ARGUMENT COUNT ERRORS:
-- asserts!: (asserts! condition error) - EXACTLY 2 args
-- map-get?: (map-get? map-name key) - EXACTLY 2 args  
-- map-set: (map-set map-name key value) - EXACTLY 3 args
-- var-get: (var-get var-name) - EXACTLY 1 arg
-- var-set: (var-set var-name value) - EXACTLY 2 args
-- ft-mint?: (ft-mint? token amount recipient) - EXACTLY 3 args
-- ft-transfer?: (ft-transfer? token amount sender recipient) - EXACTLY 4 args
-- nft-mint?: (nft-mint? token id recipient) - EXACTLY 3 args
-- nft-transfer?: (nft-transfer? token id sender recipient) - EXACTLY 4 args
+EXACT SYNTAX REQUIREMENTS:
+- Maps: (define-map name {key: type} {value: type})
+- Map access: (map-get? map-name {key: value})
+- Map set: (map-set map-name {key: value1} {value: value2})
+- Get tuple field: (get field-name tuple-value)
+- NFT definition: (define-non-fungible-token name uint)
+- Let binding: (let ((var-name value)) ...)
 
-NFT CONTRACT PATTERN - CRITICAL:
-For contracts with mapping(uint => address) owners:
-1. ALWAYS use (define-non-fungible-token my-nft uint)
-2. ALWAYS use (define-map stored-owners uint principal) 
-3. For mint function: DO NOT use nft-mint?, just use map-set
-4. For transfer function: DO NOT use nft-transfer?, just use map-set with asserts!
-
-CORRECT NFT MINT PATTERN - SIMPLIFIED:
-(define-public (mint (param-to principal))
-  (begin
-    (map-set stored-owners (var-get stored-counter) param-to)
-    (var-set stored-counter (+ (var-get stored-counter) u1))
-    (ok true)))
-
-CRITICAL: For NFT contracts with mapping(uint => address) owners:
-- MUST use (define-non-fungible-token my-nft uint)
-- NEVER use (define-fungible-token) for NFT contracts
-- Use simple map operations, NOT nft-mint? or nft-transfer?
-
-CORRECT EXAMPLES:
-- Assertion: (asserts! (is-eq owner tx-sender) (err u100))
-- Map read: (map-get? stored-owners token-id)
-- Map write: (map-set stored-owners token-id new-owner)
-- Variable read: (var-get stored-counter)
-- Variable write: (var-set stored-counter new-value)
-
-MAP COMPARISON - CRITICAL - FIXED ARGUMENT COUNT:
-- WRONG: (is-eq (map-get? map key) (some value)) - causes argument errors
-- CORRECT: (is-eq (default-to 'SP000000000000000000002Q6VF78 (map-get? map key)) value)
-- CORRECT: (asserts! (is-eq (default-to 'SP000000000000000000002Q6VF78 (map-get? stored-owners param-token-id)) param-from) (err u100))
-
-NFT TRANSFER EXAMPLE - FIXED ARGUMENT COUNT:
-(define-public (transfer (param-from principal) (param-to principal) (param-token-id uint))
-  (begin
-    (asserts! (is-eq (default-to 'SP000000000000000000002Q6VF78 (map-get? stored-owners param-token-id)) param-from) (err u100))
-    (map-set stored-owners param-token-id param-to)
-    (ok true)))
-
-RETURN ONLY CLARITY CODE - NO EXPLANATIONS
-
-FORMAT REQUIREMENTS:
-- Use proper indentation (2 spaces for nested expressions)
-- Add blank lines between function definitions
-- No trailing whitespace
-- Clean, readable formatting
-- No markdown code blocks
-- No comments or explanations`;
+RETURN ONLY CLARITY CODE - NO EXPLANATIONS`;
 
 // Health check endpoint
 app.get("/health", (_req, res) => {
@@ -422,6 +342,249 @@ IMPORTANT: If this contract has mapping(uint256 => address) OR mapping(uint => a
   }
 });
 
+// Explanation endpoint - explains generated Clarity code
+app.post("/explain", async (req, res) => {
+  try {
+    const { clarity_code } = req.body;
+
+    if (!clarity_code) {
+      return res.status(400).json({
+        status: "error",
+        message: "Missing clarity_code in request body",
+      });
+    }
+
+    // System prompt for explaining Clarity code
+    const EXPLANATION_PROMPT = `You are a Clarity smart contract expert. Analyze the provided Clarity code and provide a detailed, educational breakdown.
+
+EXPLANATION FORMAT:
+1. **Contract Overview**: Brief summary of what this contract does
+2. **Token/NFT Definition**: Explain any token definitions (define-fungible-token, define-non-fungible-token)
+3. **Data Storage**: Break down all define-data-var and define-map declarations
+4. **Functions**: For each function, explain:
+   - Purpose and functionality
+   - Parameters and their types
+   - Logic flow step by step
+   - Return values
+5. **Key Clarity Concepts**: Explain important Clarity-specific concepts used
+
+STYLE:
+- Use clear, educational language
+- Include code snippets with explanations
+- Explain Clarity-specific syntax and concepts
+- Be thorough but accessible
+- Use bullet points and sections for readability
+
+FOCUS ON:
+- How data is stored and accessed
+- Function logic and flow
+- Clarity-specific patterns (map-get?, var-set, asserts!, etc.)
+- Security considerations
+- Best practices demonstrated`;
+
+    // Send to Groq API for explanation
+    const completion = await groq.chat.completions.create({
+      messages: [
+        {
+          role: "system",
+          content: EXPLANATION_PROMPT,
+        },
+        {
+          role: "user",
+          content: `Please explain this Clarity smart contract code in detail:
+
+\`\`\`clarity
+${clarity_code}
+\`\`\``,
+        },
+      ],
+      model: "llama3-8b-8192",
+      temperature: 0.3,
+      max_tokens: 3000,
+    });
+
+    const explanation = completion.choices[0]?.message?.content;
+
+    if (!explanation) {
+      return res.status(500).json({
+        status: "error",
+        message: "Failed to get explanation from AI",
+      });
+    }
+
+    // Check if request wants plain text
+    const acceptHeader = req.headers.accept || "";
+    const userAgent = req.headers["user-agent"] || "";
+
+    if (acceptHeader.includes("text/plain") || userAgent.includes("curl")) {
+      res.setHeader("Content-Type", "text/plain");
+      return res.send(explanation);
+    }
+
+    // Return JSON response
+    res.json({
+      status: "success",
+      explanation: explanation,
+      clarity_code: clarity_code,
+    });
+  } catch (error) {
+    console.error("Explanation error:", error);
+    res.status(500).json({
+      status: "error",
+      message: "Internal server error during explanation",
+    });
+  }
+});
+
+// Combined convert and explain endpoint
+app.post("/convert-explain", async (req, res) => {
+  try {
+    const { solidity_code } = req.body;
+
+    if (!solidity_code) {
+      return res.status(400).json({
+        status: "error",
+        message: "Missing solidity_code in request body",
+      });
+    }
+
+    // First, convert the Solidity code (reusing existing logic)
+    const conversionCompletion = await groq.chat.completions.create({
+      messages: [
+        {
+          role: "system",
+          content: SYSTEM_PROMPT,
+        },
+        {
+          role: "user",
+          content: `${solidity_code}
+
+IMPORTANT: If this contract has mapping(uint256 => address) OR mapping(uint => address) for owners, use (define-non-fungible-token my-nft uint) NOT define-fungible-token.`,
+        },
+      ],
+      model: "llama3-8b-8192",
+      temperature: 0.1,
+      max_tokens: 2048,
+    });
+
+    const clarityCode = conversionCompletion.choices[0]?.message?.content;
+
+    if (!clarityCode) {
+      return res.status(500).json({
+        status: "error",
+        message: "Failed to convert Solidity code",
+      });
+    }
+
+    // Clean the converted code
+    let cleanCode = clarityCode;
+    cleanCode = cleanCode.replace(/```clarity\n?/g, "").replace(/```\n?/g, "");
+    cleanCode = cleanCode.replace(/^Here is the converted.*?:\s*/i, "");
+    cleanCode = cleanCode.replace(/^.*?converted.*?code.*?:\s*/i, "");
+    cleanCode = cleanCode.replace(/Note:.*$/gm, "");
+    cleanCode = cleanCode.replace(/^.*?explanation.*?$/gm, "");
+    cleanCode = cleanCode.trim();
+
+    // Format the code
+    const formattedCode = cleanCode
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .map((line) => {
+        if (line.startsWith("(") && !line.startsWith("(define")) {
+          return "  " + line;
+        }
+        return line;
+      })
+      .join("\n")
+      .replace(/\)\n\n\(/g, ")\n\n(")
+      .replace(/\n{3,}/g, "\n\n");
+
+    // Now explain the converted code
+    const EXPLANATION_PROMPT = `You are a Clarity smart contract expert. Analyze the provided Clarity code and provide a detailed, educational breakdown.
+
+EXPLANATION FORMAT:
+1. **Contract Overview**: Brief summary of what this contract does
+2. **Token/NFT Definition**: Explain any token definitions (define-fungible-token, define-non-fungible-token)
+3. **Data Storage**: Break down all define-data-var and define-map declarations
+4. **Functions**: For each function, explain:
+   - Purpose and functionality
+   - Parameters and their types
+   - Logic flow step by step
+   - Return values
+5. **Key Clarity Concepts**: Explain important Clarity-specific concepts used
+
+STYLE:
+- Use clear, educational language
+- Include code snippets with explanations
+- Explain Clarity-specific syntax and concepts
+- Be thorough but accessible
+- Use bullet points and sections for readability`;
+
+    const explanationCompletion = await groq.chat.completions.create({
+      messages: [
+        {
+          role: "system",
+          content: EXPLANATION_PROMPT,
+        },
+        {
+          role: "user",
+          content: `Please explain this Clarity smart contract code that was converted from Solidity:
+
+Original Solidity:
+\`\`\`solidity
+${solidity_code}
+\`\`\`
+
+Converted Clarity:
+\`\`\`clarity
+${formattedCode}
+\`\`\``,
+        },
+      ],
+      model: "llama3-8b-8192",
+      temperature: 0.3,
+      max_tokens: 3000,
+    });
+
+    const explanation = explanationCompletion.choices[0]?.message?.content;
+
+    if (!explanation) {
+      return res.status(500).json({
+        status: "error",
+        message: "Failed to generate explanation",
+      });
+    }
+
+    // Check if request wants plain text
+    const acceptHeader = req.headers.accept || "";
+    const userAgent = req.headers["user-agent"] || "";
+
+    if (acceptHeader.includes("text/plain") || userAgent.includes("curl")) {
+      res.setHeader("Content-Type", "text/plain");
+      return res.send(`CONVERTED CLARITY CODE:
+${formattedCode}
+
+EXPLANATION:
+${explanation}`);
+    }
+
+    // Return JSON response
+    res.json({
+      status: "success",
+      solidity_code: solidity_code,
+      clarity_code: formattedCode,
+      explanation: explanation,
+    });
+  } catch (error) {
+    console.error("Convert-explain error:", error);
+    res.status(500).json({
+      status: "error",
+      message: "Internal server error during conversion and explanation",
+    });
+  }
+});
+
 // Error handling middleware
 app.use((err, _req, res, _next) => {
   console.error(err.stack);
@@ -443,6 +606,9 @@ app.listen(PORT, () => {
   console.log(`Solidity → Clarity Converter API running on port ${PORT}`);
   console.log(`Health check: http://localhost:${PORT}/health`);
   console.log(`Convert endpoint: http://localhost:${PORT}/convert`);
+  console.log(`Plain text convert: http://localhost:${PORT}/convert/plain`);
+  console.log(`Explain endpoint: http://localhost:${PORT}/explain`);
+  console.log(`Convert + Explain: http://localhost:${PORT}/convert-explain`);
 });
 
 module.exports = app;
