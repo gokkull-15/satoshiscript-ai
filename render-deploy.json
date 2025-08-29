@@ -1,0 +1,25 @@
+{
+  "services": [
+    {
+      "type": "web",
+      "name": "solidity-clarity-converter",
+      "env": "node",
+      "plan": "free",
+      "buildCommand": "npm install",
+      "startCommand": "npm start",
+      "envVars": [
+        {
+          "key": "NODE_ENV",
+          "value": "production"
+        },
+        {
+          "key": "GROQ_API_KEY",
+          "generateValue": false
+        }
+      ],
+      "autoDeploy": true,
+      "repo": "https://github.com/gokkull-15/satoshiscript-ai.git",
+      "branch": "main"
+    }
+  ]
+}
