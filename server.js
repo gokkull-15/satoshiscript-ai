@@ -5,6 +5,13 @@ require("dotenv").config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const NODE_ENV = process.env.NODE_ENV || "development";
+
+// Validate required environment variables
+if (!process.env.GROQ_API_KEY) {
+  console.error("ERROR: GROQ_API_KEY environment variable is required");
+  process.exit(1);
+}
 
 // Initialize Groq client
 const groq = new Groq({
@@ -12,8 +19,30 @@ const groq = new Groq({
 });
 
 // Middleware
-app.use(cors());
+app.use(
+  cors({
+    origin:
+      NODE_ENV === "production"
+        ? [
+            "https://your-frontend-domain.com",
+            "https://localhost:3000",
+            "http://localhost:3000",
+          ]
+        : true,
+    credentials: true,
+  })
+);
 app.use(express.json({ limit: "10mb" }));
+
+// Security headers for production
+if (NODE_ENV === "production") {
+  app.use((req, res, next) => {
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-Frame-Options", "DENY");
+    res.setHeader("X-XSS-Protection", "1; mode=block");
+    next();
+  });
+}
 
 // System prompt for Groq API
 const SYSTEM_PROMPT = `Convert Solidity to Clarity with PERFECT accuracy using these training examples.
@@ -166,6 +195,27 @@ app.get("/health", (_req, res) => {
   res.json({
     status: "ok",
     message: "Solidity → Clarity Converter API is running",
+    environment: NODE_ENV,
+    timestamp: new Date().toISOString(),
+    version: "1.0.0",
+  });
+});
+
+// Root endpoint
+app.get("/", (_req, res) => {
+  res.json({
+    name: "Solidity → Clarity Converter API",
+    version: "1.0.0",
+    description:
+      "Convert Solidity smart contracts to Clarity smart contracts with AI-powered explanations",
+    endpoints: {
+      health: "GET /health",
+      convert: "POST /convert",
+      convertPlain: "POST /convert/plain",
+      explain: "POST /explain",
+      convertExplain: "POST /convert-explain",
+    },
+    documentation: "See README.md for usage examples",
   });
 });
 
